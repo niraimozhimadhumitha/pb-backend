@@ -3,8 +3,7 @@ import os
 import dj_database_url
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-
-SECRET_KEY = 'django-insecure-temp-key'
+SECRET_KEY = 'your-very-long-random-secret-key-1234567890'
 
 DEBUG = False
 
@@ -100,3 +99,5 @@ CORS_ALLOW_ALL_ORIGINS = True
 CSRF_TRUSTED_ORIGINS = [
     "https://web-production-2d9f5.up.railway.app"
 ]
+CSRF_COOKIE_SECURE = True
+SESSION_COOKIE_SECURE = True
