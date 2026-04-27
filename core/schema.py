@@ -287,11 +287,11 @@ class Query(graphene.ObjectType):
         return ProcessEntry.objects.filter(process=process).order_by("-created_at")
 
     def resolve_process_entries_by_date(self, info, month, year, day=None):
-    require_active(info)  # ← any logged-in active user can read entries
-    qs = ProcessEntry.objects.filter(month=month, year=year)
-    if day:
-        qs = qs.filter(day=day)
-    return qs.order_by("-created_at")
+        require_admin(info)
+        qs = ProcessEntry.objects.filter(month=month, year=year)
+        if day:
+            qs = qs.filter(day=day)
+        return qs.order_by("-created_at")
 
     # ── Attendance ────────────────────────────────────────────
     all_attendance         = graphene.List(AttendanceType)
