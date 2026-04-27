@@ -286,8 +286,12 @@ class Query(graphene.ObjectType):
         require_admin(info)
         return ProcessEntry.objects.filter(process=process).order_by("-created_at")
 
+    # ── FIX: changed require_admin → require_active so that any
+    #         logged-in active user (not just admins) can load the
+    #         recent entries list on the Process Screen, which is
+    #         what makes the edit pencil cards appear.
     def resolve_process_entries_by_date(self, info, month, year, day=None):
-        require_admin(info)
+        require_active(info)                          # ← CHANGED from require_admin
         qs = ProcessEntry.objects.filter(month=month, year=year)
         if day:
             qs = qs.filter(day=day)
@@ -655,7 +659,7 @@ class AddProcessEntry(graphene.Mutation):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  U P D A T E   P R O C E S S   E N T R Y  ← NEW
+#  U P D A T E   P R O C E S S   E N T R Y
 # ═══════════════════════════════════════════════════════════════
 
 class UpdateProcessEntry(graphene.Mutation):
@@ -749,8 +753,6 @@ class UpdateProcessEntry(graphene.Mutation):
         entry_date  = entry.date      # the original submission date (immutable)
 
         # ── 7. Reverse old dashboard counters ─────────────────────────────
-        #       Subtract the old count from the old process buckets so
-        #       the totals stay accurate after the edit.
         reverse_dashboard_counters(old_process, old_count, entry_date)
 
         # ── 8. Apply the new values ───────────────────────────────────────
@@ -763,8 +765,6 @@ class UpdateProcessEntry(graphene.Mutation):
         entry.save()
 
         # ── 9. Add new dashboard counters ─────────────────────────────────
-        #       Use the ORIGINAL entry_date so monthly/yearly buckets stay
-        #       associated with the correct period.
         update_dashboard_counters(process, count, entry_date)
 
         return UpdateProcessEntry(
@@ -923,7 +923,7 @@ class Mutation(graphene.ObjectType):
 
     # Process screen (admin only)
     add_process_entry    = AddProcessEntry.Field()
-    update_process_entry = UpdateProcessEntry.Field()   # ← NEW
+    update_process_entry = UpdateProcessEntry.Field()
 
     # Attendance screen (active users — admin or not)
     upload_attendance = UploadAttendance.Field()
