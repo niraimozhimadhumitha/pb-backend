@@ -41,6 +41,72 @@ def require_admin(info):
 
 
 # ═════════════════════════════════════════════════════════════
+#  D A S H B O A R D   H E L P E R
+# ═════════════════════════════════════════════════════════════
+
+def _process_field(process: str) -> str:
+    """Map process name → DashboardTotal / DailyProduction / etc. field name."""
+    return {
+        "Welding":  "welding",
+        "UT":       "ut",
+        "Forming":  "forming",
+        "SR":       "sr",
+        "Final UT": "final_ut",
+    }.get(process, "")
+
+
+def reverse_dashboard_counters(process: str, count: int, entry_date):
+    """
+    Subtract `count` from all dashboard aggregation tables for
+    the given process and date. Called before updating an entry
+    so the old value is removed before the new one is added.
+    """
+    field = _process_field(process)
+    if not field:
+        return
+
+    # ── Global total ────────────────────────────────────────
+    total, _ = DashboardTotal.objects.get_or_create(key="GLOBAL")
+    current = getattr(total, f"total_{field}", 0)
+    setattr(total, f"total_{field}", max(0, current - count))
+    total.save()
+
+    # ── Daily snapshot ───────────────────────────────────────
+    try:
+        daily = DailyProduction.objects.get(
+            day=entry_date.day,
+            month=entry_date.month,
+            year=entry_date.year,
+        )
+        current_d = getattr(daily, field, 0)
+        setattr(daily, field, max(0, current_d - count))
+        daily.save()
+    except DailyProduction.DoesNotExist:
+        pass
+
+    # ── Monthly snapshot ─────────────────────────────────────
+    try:
+        monthly = MonthlyProduction.objects.get(
+            month=entry_date.month,
+            year=entry_date.year,
+        )
+        current_m = getattr(monthly, field, 0)
+        setattr(monthly, field, max(0, current_m - count))
+        monthly.save()
+    except MonthlyProduction.DoesNotExist:
+        pass
+
+    # ── Yearly snapshot ──────────────────────────────────────
+    try:
+        yearly = YearlyProduction.objects.get(year=entry_date.year)
+        current_y = getattr(yearly, field, 0)
+        setattr(yearly, field, max(0, current_y - count))
+        yearly.save()
+    except YearlyProduction.DoesNotExist:
+        pass
+
+
+# ═════════════════════════════════════════════════════════════
 #  G R A P H E N E   T Y P E S
 # ═════════════════════════════════════════════════════════════
 
@@ -78,14 +144,13 @@ class DayToDayType(DjangoObjectType):
         )
 
 
-# ✅ UPDATED: added reference_numbers to exposed fields
 class ProcessEntryType(DjangoObjectType):
     class Meta:
         model = ProcessEntry
         fields = (
             "id", "process", "employee", "employee_name", "employee_id_snapshot",
             "count", "pass_count", "fail_count",
-            "reference_numbers",          # ✅ NEW
+            "reference_numbers",
             "submitted_by", "date", "day", "month", "year", "created_at",
         )
 
@@ -529,7 +594,7 @@ class AddProcessEntry(graphene.Mutation):
         count             = graphene.Int(required=True)
         pass_count        = graphene.Int(required=False)
         fail_count        = graphene.Int(required=False)
-        reference_numbers = graphene.String(required=False)   # ✅ NEW — comma-separated e.g. "101,102,103"
+        reference_numbers = graphene.String(required=False)
 
     def mutate(self, info, process, employee_id, count,
                pass_count=0, fail_count=0, reference_numbers=None):
@@ -551,10 +616,9 @@ class AddProcessEntry(graphene.Mutation):
         if reference_numbers:
             incoming = [r.strip() for r in reference_numbers.split(',') if r.strip()]
 
-            # Collect every reference number already stored in the DB
             existing_refs = set()
-            for entry in ProcessEntry.objects.exclude(reference_numbers='').values_list('reference_numbers', flat=True):
-                for ref in entry.split(','):
+            for ref_str in ProcessEntry.objects.exclude(reference_numbers='').values_list('reference_numbers', flat=True):
+                for ref in ref_str.split(','):
                     existing_refs.add(ref.strip())
 
             duplicates = [r for r in incoming if r in existing_refs]
@@ -573,7 +637,7 @@ class AddProcessEntry(graphene.Mutation):
             count=count,
             pass_count=pass_count,
             fail_count=fail_count,
-            reference_numbers=reference_numbers or '',   # ✅ save to DB
+            reference_numbers=reference_numbers or '',
             submitted_by=info.context.user,
             date=today,
             day=today.day,
@@ -586,6 +650,126 @@ class AddProcessEntry(graphene.Mutation):
         return AddProcessEntry(
             success=True,
             message="Process entry submitted and dashboard updated",
+            entry=entry,
+        )
+
+
+# ═══════════════════════════════════════════════════════════════
+#  U P D A T E   P R O C E S S   E N T R Y  ← NEW
+# ═══════════════════════════════════════════════════════════════
+
+class UpdateProcessEntry(graphene.Mutation):
+    """
+    Edit an existing ProcessEntry.
+
+    What changes:
+      - process, count, pass_count, fail_count, reference_numbers
+
+    What never changes:
+      - employee, employee_name, employee_id_snapshot  (data integrity)
+      - date / day / month / year                       (immutable — always the original submission date)
+      - submitted_by                                     (audit trail)
+
+    Dashboard counters are adjusted atomically:
+      1. Subtract the OLD count from the OLD process buckets.
+      2. Add    the NEW count to   the NEW process buckets.
+    This keeps DashboardTotal, DailyProduction, MonthlyProduction,
+    and YearlyProduction perfectly in sync.
+    """
+
+    entry   = graphene.Field(ProcessEntryType)
+    success = graphene.Boolean()
+    message = graphene.String()
+
+    class Arguments:
+        entry_id          = graphene.ID(required=True)
+        process           = graphene.String(required=True)
+        count             = graphene.Int(required=True)
+        pass_count        = graphene.Int(required=False)
+        fail_count        = graphene.Int(required=False)
+        reference_numbers = graphene.String(required=False)
+
+    def mutate(self, info, entry_id, process, count,
+               pass_count=0, fail_count=0, reference_numbers=None):
+        require_admin(info)
+
+        # ── 1. Fetch the entry ────────────────────────────────────────────
+        try:
+            entry = ProcessEntry.objects.get(id=entry_id)
+        except ProcessEntry.DoesNotExist:
+            return UpdateProcessEntry(success=False, message="Process entry not found")
+
+        # ── 2. Validate new process ───────────────────────────────────────
+        valid_processes = ["Welding", "UT", "Forming", "SR", "Final UT"]
+        if process not in valid_processes:
+            return UpdateProcessEntry(
+                success=False,
+                message=f"Invalid process. Choose from: {valid_processes}"
+            )
+
+        # ── 3. Validate new count ─────────────────────────────────────────
+        if not (1 <= count <= 20):
+            return UpdateProcessEntry(
+                success=False,
+                message="Count must be between 1 and 20"
+            )
+
+        # ── 4. Validate Welding pass/fail ─────────────────────────────────
+        if process == "Welding" and pass_count == 0 and fail_count == 0:
+            return UpdateProcessEntry(
+                success=False,
+                message="Welding entry requires at least a pass count or fail count."
+            )
+
+        # ── 5. Duplicate reference number check (exclude this entry itself) ─
+        if reference_numbers:
+            incoming = [r.strip() for r in reference_numbers.split(',') if r.strip()]
+
+            # Collect all refs from every OTHER entry (not this one)
+            existing_refs = set()
+            for ref_str in (
+                ProcessEntry.objects
+                .exclude(id=entry_id)           # ← key: skip self
+                .exclude(reference_numbers='')
+                .values_list('reference_numbers', flat=True)
+            ):
+                for ref in ref_str.split(','):
+                    existing_refs.add(ref.strip())
+
+            duplicates = [r for r in incoming if r in existing_refs]
+            if duplicates:
+                return UpdateProcessEntry(
+                    success=False,
+                    message=f"Reference numbers already used in other entries: {', '.join(duplicates)}"
+                )
+
+        # ── 6. Snapshot the OLD values before mutating ────────────────────
+        old_process = entry.process
+        old_count   = entry.count
+        entry_date  = entry.date      # the original submission date (immutable)
+
+        # ── 7. Reverse old dashboard counters ─────────────────────────────
+        #       Subtract the old count from the old process buckets so
+        #       the totals stay accurate after the edit.
+        reverse_dashboard_counters(old_process, old_count, entry_date)
+
+        # ── 8. Apply the new values ───────────────────────────────────────
+        entry.process           = process
+        entry.count             = count
+        entry.pass_count        = pass_count
+        entry.fail_count        = fail_count
+        entry.reference_numbers = reference_numbers or ''
+        # NOTE: employee, date, day, month, year, submitted_by are NOT touched
+        entry.save()
+
+        # ── 9. Add new dashboard counters ─────────────────────────────────
+        #       Use the ORIGINAL entry_date so monthly/yearly buckets stay
+        #       associated with the correct period.
+        update_dashboard_counters(process, count, entry_date)
+
+        return UpdateProcessEntry(
+            success=True,
+            message="Process entry updated and dashboard recalculated",
             entry=entry,
         )
 
@@ -738,7 +922,8 @@ class Mutation(graphene.ObjectType):
     add_day_to_day_entry = AddDayToDayEntry.Field()
 
     # Process screen (admin only)
-    add_process_entry = AddProcessEntry.Field()
+    add_process_entry    = AddProcessEntry.Field()
+    update_process_entry = UpdateProcessEntry.Field()   # ← NEW
 
     # Attendance screen (active users — admin or not)
     upload_attendance = UploadAttendance.Field()
