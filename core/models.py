@@ -96,8 +96,8 @@ DAY_TO_DAY_PROCESS_CHOICES = [
 
 class DayToDay(models.Model):
     process      = models.CharField(max_length=20, choices=DAY_TO_DAY_PROCESS_CHOICES)
-    count        = models.PositiveIntegerField()          # 1–20 dropdown
-    input_numbers = models.CharField(max_length=500, blank=True, null=True)  # free-text field
+    count        = models.PositiveIntegerField()
+    input_numbers = models.CharField(max_length=500, blank=True, null=True)
     submitted_by = models.ForeignKey(User, on_delete=models.CASCADE)
     date         = models.DateField(auto_now_add=True)
     day          = models.IntegerField()
@@ -120,24 +120,27 @@ class DayToDay(models.Model):
 #  Process Entry Model  (worker-wise production)
 # ─────────────────────────────────────────────────────────────
 class ProcessEntry(models.Model):
-    process       = models.CharField(max_length=20, choices=PROCESS_CHOICES)
-    employee      = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="entries")
-    employee_name = models.CharField(max_length=255)   # snapshot
-    employee_id_snapshot   = models.CharField(max_length=50)    # snapshot
-    
-    count         = models.PositiveIntegerField()     # 1–20 dropdown
+    process              = models.CharField(max_length=20, choices=PROCESS_CHOICES)
+    employee             = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="entries")
+    employee_name        = models.CharField(max_length=255)        # snapshot
+    employee_id_snapshot = models.CharField(max_length=50)         # snapshot
+
+    count      = models.PositiveIntegerField()
     pass_count = models.PositiveIntegerField(default=0)
     fail_count = models.PositiveIntegerField(default=0)
-  
-    submitted_by  = models.ForeignKey(User, on_delete=models.CASCADE)
-    date          = models.DateField(auto_now_add=True)
-    day           = models.IntegerField()
-    month         = models.IntegerField()
-    year          = models.IntegerField()
-    created_at    = models.DateTimeField(auto_now_add=True)
+
+    # ✅ NEW — comma-separated serial/reference numbers e.g. "101,102,103"
+    # max_length=500 supports up to ~20 numbers of ~5 digits each (covers 1–20 dropdown)
+    reference_numbers = models.CharField(max_length=500, blank=True, default='')
+
+    submitted_by = models.ForeignKey(User, on_delete=models.CASCADE)
+    date         = models.DateField(auto_now_add=True)
+    day          = models.IntegerField()
+    month        = models.IntegerField()
+    year         = models.IntegerField()
+    created_at   = models.DateTimeField(auto_now_add=True)
 
     def save(self, *args, **kwargs):
-        # Snapshot employee details at write time
         if self.employee_id:
             pass  # set externally via mutate
         if self.date:
@@ -168,7 +171,6 @@ class Attendance(models.Model):
     photo         = models.ImageField(upload_to="attendance_photos/", null=True, blank=True)
     photo_url     = models.URLField(max_length=1000, blank=True, null=True)
 
-    # NEW: separate in/out photos
     in_photo      = models.ImageField(upload_to="attendance_photos/", null=True, blank=True)
     in_photo_url  = models.URLField(max_length=1000, blank=True, null=True)
     out_photo     = models.ImageField(upload_to="attendance_photos/", null=True, blank=True)
@@ -179,11 +181,10 @@ class Attendance(models.Model):
     accuracy      = models.FloatField(null=True, blank=True)
     address       = models.CharField(max_length=500, blank=True, null=True)
 
-    # NEW: in/out times
     in_time       = models.DateTimeField(null=True, blank=True)
     out_time      = models.DateTimeField(null=True, blank=True)
 
-    captured_at   = models.DateTimeField()   # keeps backward compat (= in_time)
+    captured_at   = models.DateTimeField()
     day           = models.IntegerField()
     month         = models.IntegerField()
     year          = models.IntegerField()
@@ -206,17 +207,18 @@ class Attendance(models.Model):
     def __str__(self):
         return f"{self.employee_name} – {self.captured_at.date()}"
 
+
 # ─────────────────────────────────────────────────────────────
 #  Dashboard – Cumulative Total  (single-row table)
 # ─────────────────────────────────────────────────────────────
 class DashboardTotal(models.Model):
-    key           = models.CharField(max_length=20, default="GLOBAL", unique=True)
-    total_welding = models.PositiveBigIntegerField(default=0)
-    total_ut      = models.PositiveBigIntegerField(default=0)
-    total_forming = models.PositiveBigIntegerField(default=0)
-    total_sr      = models.PositiveBigIntegerField(default=0)
+    key            = models.CharField(max_length=20, default="GLOBAL", unique=True)
+    total_welding  = models.PositiveBigIntegerField(default=0)
+    total_ut       = models.PositiveBigIntegerField(default=0)
+    total_forming  = models.PositiveBigIntegerField(default=0)
+    total_sr       = models.PositiveBigIntegerField(default=0)
     total_final_ut = models.PositiveBigIntegerField(default=0)
-    last_updated  = models.DateTimeField(auto_now=True)
+    last_updated   = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return "Global Dashboard Totals"
