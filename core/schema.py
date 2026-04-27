@@ -16,6 +16,29 @@ from .models import (
 from .utils import update_dashboard_counters
 
 
+# ═════════════════════════════════════════════════════════════
+#  H E L P E R   P E R M I S S I O N   C H E C K S
+# ═════════════════════════════════════════════════════════════
+
+def require_active(info):
+    """User must be logged in and active. Attendance screen access."""
+    user = info.context.user
+    if not user.is_authenticated:
+        raise Exception("Authentication required. Please log in.")
+    if not user.active:
+        raise Exception("Your account is inactive. Contact admin.")
+
+
+def require_admin(info):
+    """User must be logged in, active, AND admin. Full access."""
+    user = info.context.user
+    if not user.is_authenticated:
+        raise Exception("Authentication required. Please log in.")
+    if not user.active:
+        raise Exception("Your account is inactive. Contact admin.")
+    if not user.admin:
+        raise Exception("Admin access required for this action.")
+
 
 # ═════════════════════════════════════════════════════════════
 #  G R A P H E N E   T Y P E S
@@ -45,6 +68,7 @@ class EmployeeType(DjangoObjectType):
     def resolve_dropdown_label(self, info):
         return f"{self.employee_id} - {self.name}"
 
+
 class DayToDayType(DjangoObjectType):
     class Meta:
         model = DayToDay
@@ -59,29 +83,41 @@ class ProcessEntryType(DjangoObjectType):
         model = ProcessEntry
         fields = (
             "id", "process", "employee", "employee_name", "employee_id_snapshot",
-            "count", "pass_count",   # ✅ ADD
+            "count", "pass_count",
             "fail_count", "submitted_by", "date", "day", "month", "year", "created_at",
         )
 
 
 class AttendanceType(DjangoObjectType):
-    photo_display_url = graphene.String()
+    photo_display_url     = graphene.String()
+    in_photo_display_url  = graphene.String()
+    out_photo_display_url = graphene.String()
 
     class Meta:
         model = Attendance
         fields = (
             "id", "employee", "employee_name", "employee_id_snapshot",
-            "photo_url", "latitude", "longitude", "accuracy", "address",
+            "photo_url", "in_photo_url", "out_photo_url",
+            "latitude", "longitude", "accuracy", "address",
+            "in_time", "out_time",
             "captured_at", "day", "month", "year",
             "status", "uploaded_by", "remarks", "created_at",
         )
 
     def resolve_photo_display_url(self, info):
-        """Returns absolute URL if photo is stored locally."""
         if self.photo:
-            request = info.context
-            return request.build_absolute_uri(self.photo.url)
+            return info.context.build_absolute_uri(self.photo.url)
         return self.photo_url
+
+    def resolve_in_photo_display_url(self, info):
+        if self.in_photo:
+            return info.context.build_absolute_uri(self.in_photo.url)
+        return self.in_photo_url
+
+    def resolve_out_photo_display_url(self, info):
+        if self.out_photo:
+            return info.context.build_absolute_uri(self.out_photo.url)
+        return self.out_photo_url
 
 
 class DashboardTotalType(DjangoObjectType):
@@ -121,121 +157,123 @@ class Query(graphene.ObjectType):
     # ── Auth ─────────────────────────────────────────────────
     current_user = graphene.Field(UserType)
 
-    @login_required
     def resolve_current_user(self, info):
+        require_active(info)  # any active user can see themselves
         return info.context.user
 
     # ── Employees ─────────────────────────────────────────────
-    all_employees      = graphene.List(EmployeeType)
-    employee_by_id     = graphene.Field(EmployeeType, id=graphene.ID(required=True))
+    all_employees        = graphene.List(EmployeeType)
+    employee_by_id       = graphene.Field(EmployeeType, id=graphene.ID(required=True))
     employees_by_process = graphene.List(EmployeeType, process=graphene.String(required=True))
 
-    @login_required
     def resolve_all_employees(self, info):
+        require_admin(info)  # admin only
         return Employee.objects.filter(is_active=True)
 
-    @login_required
     def resolve_employee_by_id(self, info, id):
+        require_admin(info)  # admin only
         try:
             return Employee.objects.get(id=id)
         except Employee.DoesNotExist:
             raise Exception("Employee not found")
 
-  
     def resolve_employees_by_process(self, info, process):
+        # ℹ️ Kept open for attendance screen dropdowns (active users need this)
+        require_active(info)
         return Employee.objects.filter(process=process, is_active=True)
 
     # ── Day-to-Day Monitoring ─────────────────────────────────
-    all_day_to_day      = graphene.List(DayToDayType)
-    day_to_day_by_date  = graphene.List(DayToDayType, day=graphene.Int(), month=graphene.Int(required=True), year=graphene.Int(required=True))
+    all_day_to_day        = graphene.List(DayToDayType)
+    day_to_day_by_date    = graphene.List(DayToDayType, day=graphene.Int(), month=graphene.Int(required=True), year=graphene.Int(required=True))
     day_to_day_by_process = graphene.List(DayToDayType, process=graphene.String(required=True))
 
-    @login_required
     def resolve_all_day_to_day(self, info):
+        require_admin(info)  # admin only
         return DayToDay.objects.all().order_by("-created_at")
 
-    @login_required
     def resolve_day_to_day_by_date(self, info, month, year, day=None):
+        require_admin(info)  # admin only
         qs = DayToDay.objects.filter(month=month, year=year)
         if day:
             qs = qs.filter(day=day)
         return qs.order_by("-created_at")
 
-    @login_required
     def resolve_day_to_day_by_process(self, info, process):
+        require_admin(info)  # admin only
         return DayToDay.objects.filter(process=process).order_by("-created_at")
 
     # ── Process Entries ───────────────────────────────────────
-    all_process_entries        = graphene.List(ProcessEntryType)
+    all_process_entries         = graphene.List(ProcessEntryType)
     process_entries_by_employee = graphene.List(ProcessEntryType, employee_id=graphene.ID(required=True))
     process_entries_by_process  = graphene.List(ProcessEntryType, process=graphene.String(required=True))
     process_entries_by_date     = graphene.List(ProcessEntryType, day=graphene.Int(), month=graphene.Int(required=True), year=graphene.Int(required=True))
 
-    @login_required
     def resolve_all_process_entries(self, info):
+        require_admin(info)  # admin only
         return ProcessEntry.objects.all().order_by("-created_at")
 
-    @login_required
     def resolve_process_entries_by_employee(self, info, employee_id):
+        require_admin(info)  # admin only
         return ProcessEntry.objects.filter(employee_id=employee_id).order_by("-created_at")
 
-    @login_required
     def resolve_process_entries_by_process(self, info, process):
+        require_admin(info)  # admin only
         return ProcessEntry.objects.filter(process=process).order_by("-created_at")
 
-    @login_required
     def resolve_process_entries_by_date(self, info, month, year, day=None):
+        require_admin(info)  # admin only
         qs = ProcessEntry.objects.filter(month=month, year=year)
         if day:
             qs = qs.filter(day=day)
         return qs.order_by("-created_at")
 
     # ── Attendance ────────────────────────────────────────────
-    all_attendance           = graphene.List(AttendanceType)
-    attendance_by_employee   = graphene.List(AttendanceType, employee_id=graphene.ID(required=True))
-    attendance_by_date       = graphene.List(AttendanceType, day=graphene.Int(), month=graphene.Int(required=True), year=graphene.Int(required=True))
+    # ✅ Active users (attendance screen) can access these
+    all_attendance         = graphene.List(AttendanceType)
+    attendance_by_employee = graphene.List(AttendanceType, employee_id=graphene.ID(required=True))
+    attendance_by_date     = graphene.List(AttendanceType, day=graphene.Int(), month=graphene.Int(required=True), year=graphene.Int(required=True))
 
-    @login_required
     def resolve_all_attendance(self, info):
+        require_active(info)  # active users only
         return Attendance.objects.all().order_by("-captured_at")
 
-    @login_required
     def resolve_attendance_by_employee(self, info, employee_id):
+        require_active(info)  # active users only
         return Attendance.objects.filter(employee_id=employee_id).order_by("-captured_at")
 
-    @login_required
     def resolve_attendance_by_date(self, info, month, year, day=None):
+        require_active(info)  # active users only
         qs = Attendance.objects.filter(month=month, year=year)
         if day:
             qs = qs.filter(day=day)
         return qs.order_by("-captured_at")
 
     # ── Dashboard ─────────────────────────────────────────────
-    dashboard_total   = graphene.Field(DashboardTotalType)
-    daily_production  = graphene.List(DailyProductionType, month=graphene.Int(required=True), year=graphene.Int(required=True))
+    dashboard_total    = graphene.Field(DashboardTotalType)
+    daily_production   = graphene.List(DailyProductionType, month=graphene.Int(required=True), year=graphene.Int(required=True))
     monthly_production = graphene.List(MonthlyProductionType, year=graphene.Int(required=True))
     yearly_production  = graphene.List(YearlyProductionType)
     today_production   = graphene.Field(DailyProductionType)
 
-    @login_required
     def resolve_dashboard_total(self, info):
+        require_admin(info)  # admin only
         obj, _ = DashboardTotal.objects.get_or_create(key="GLOBAL")
         return obj
 
-    @login_required
     def resolve_daily_production(self, info, month, year):
+        require_admin(info)  # admin only
         return DailyProduction.objects.filter(month=month, year=year).order_by("day")
 
-    @login_required
     def resolve_monthly_production(self, info, year):
+        require_admin(info)  # admin only
         return MonthlyProduction.objects.filter(year=year).order_by("month")
 
-    @login_required
     def resolve_yearly_production(self, info):
+        require_admin(info)  # admin only
         return YearlyProduction.objects.all().order_by("year")
 
-    @login_required
     def resolve_today_production(self, info):
+        require_admin(info)  # admin only
         today = date_type.today()
         try:
             return DailyProduction.objects.get(day=today.day, month=today.month, year=today.year)
@@ -250,7 +288,7 @@ class Query(graphene.ObjectType):
 # ── Auth ──────────────────────────────────────────────────────
 
 class CreateUser(graphene.Mutation):
-    """Register a new user (admin account creation)."""
+    """Register a new user — admin only."""
     user    = graphene.Field(UserType)
     token   = graphene.String()
     success = graphene.Boolean()
@@ -263,6 +301,8 @@ class CreateUser(graphene.Mutation):
         is_admin  = graphene.Boolean(required=False, default_value=False)
 
     def mutate(self, info, username, password, full_name=None, is_admin=False):
+        require_admin(info)  # only admins can create users
+
         if User.objects.filter(username=username).exists():
             return CreateUser(success=False, message="Username already taken")
 
@@ -276,7 +316,7 @@ class CreateUser(graphene.Mutation):
 
 
 class LoginUser(graphene.Mutation):
-    """Authenticate and return JWT token."""
+    """Authenticate and return JWT token. Open to all (no auth needed)."""
     token   = graphene.String()
     success = graphene.Boolean()
     message = graphene.String()
@@ -296,9 +336,8 @@ class LoginUser(graphene.Mutation):
             return LoginUser(success=False, message="Invalid username or password", token=None, user=None)
 
         if not user.active:
-            return LoginUser(success=False, message="Account is disabled", token=None, user=None)
+            return LoginUser(success=False, message="Account is disabled. Contact admin.", token=None, user=None)
 
-        # Update last login
         user.last_login_at = timezone.now()
         user.save(update_fields=["last_login_at"])
 
@@ -307,18 +346,16 @@ class LoginUser(graphene.Mutation):
 
 
 class ForgotPassword(graphene.Mutation):
-    """Generate a reset token (send via SMS/email in production)."""
-    success = graphene.Boolean()
-    message = graphene.String()
-    reset_token = graphene.String()  # Return to frontend; in prod, send via SMS
+    """Generate a reset token. Open to all (no auth needed)."""
+    success     = graphene.Boolean()
+    message     = graphene.String()
+    reset_token = graphene.String()
 
     class Arguments:
         username = graphene.String(required=True)
 
     def mutate(self, info, username):
         import secrets
-        from datetime import timedelta
-
         try:
             user = User.objects.get(username=username)
         except User.DoesNotExist:
@@ -337,7 +374,7 @@ class ForgotPassword(graphene.Mutation):
 
 
 class ResetPassword(graphene.Mutation):
-    """Reset password using the token from ForgotPassword."""
+    """Reset password using token. Open to all (no auth needed)."""
     success = graphene.Boolean()
     message = graphene.String()
 
@@ -378,8 +415,9 @@ class CreateEmployee(graphene.Mutation):
         department  = graphene.String(required=False)
         phone       = graphene.String(required=False)
 
-    @login_required
     def mutate(self, info, employee_id, name, process, designation=None, department=None, phone=None):
+        require_admin(info)  # admin only
+
         if Employee.objects.filter(employee_id=employee_id).exists():
             return CreateEmployee(success=False, message="Employee ID already exists")
 
@@ -412,8 +450,9 @@ class UpdateEmployee(graphene.Mutation):
         phone       = graphene.String(required=False)
         is_active   = graphene.Boolean(required=False)
 
-    @login_required
     def mutate(self, info, id, name=None, process=None, designation=None, department=None, phone=None, is_active=None):
+        require_admin(info)  # admin only
+
         try:
             emp = Employee.objects.get(id=id)
         except Employee.DoesNotExist:
@@ -437,8 +476,9 @@ class DeleteEmployee(graphene.Mutation):
     class Arguments:
         id = graphene.ID(required=True)
 
-    @login_required
     def mutate(self, info, id):
+        require_admin(info)  # admin only
+
         try:
             emp = Employee.objects.get(id=id)
         except Employee.DoesNotExist:
@@ -450,21 +490,18 @@ class DeleteEmployee(graphene.Mutation):
 # ── Day-to-Day Monitoring ─────────────────────────────────────
 
 class AddDayToDayEntry(graphene.Mutation):
-    """
-    Called when the user presses 'Update' on the Day-to-Day Monitoring screen.
-    Saves the entry AND increments all dashboard counters.
-    """
     entry   = graphene.Field(DayToDayType)
     success = graphene.Boolean()
     message = graphene.String()
 
     class Arguments:
-        process       = graphene.String(required=True)   # Welding / UT / Forming / SR
-        count         = graphene.Int(required=True)       # 1–20 dropdown
-        input_numbers = graphene.String(required=False)   # free-text field
+        process       = graphene.String(required=True)
+        count         = graphene.Int(required=True)
+        input_numbers = graphene.String(required=False)
 
-    @login_required
     def mutate(self, info, process, count, input_numbers=None):
+        require_admin(info)  # admin only
+
         valid_processes = ["Welding", "UT", "Forming", "SR"]
         if process not in valid_processes:
             return AddDayToDayEntry(success=False, message=f"Invalid process. Choose: {valid_processes}")
@@ -484,7 +521,6 @@ class AddDayToDayEntry(graphene.Mutation):
             year=today.year,
         )
 
-        # ✅ Increment dashboard counters
         update_dashboard_counters(process, count, today)
 
         return AddDayToDayEntry(success=True, message="Entry recorded and dashboard updated", entry=entry)
@@ -493,24 +529,20 @@ class AddDayToDayEntry(graphene.Mutation):
 # ── Process Screen ────────────────────────────────────────────
 
 class AddProcessEntry(graphene.Mutation):
-    """
-    Called when the user presses 'Submit' on the Process screen.
-    Saves worker-wise production AND increments all dashboard counters.
-    """
-    
     entry   = graphene.Field(ProcessEntryType)
     success = graphene.Boolean()
     message = graphene.String()
 
     class Arguments:
-        process     = graphene.String(required=True)   # Welding/UT/Forming/SR/Final UT
-        employee_id = graphene.ID(required=True)        # Employee DB id
-        count       = graphene.Int(required=True)  
+        process     = graphene.String(required=True)
+        employee_id = graphene.ID(required=True)
+        count       = graphene.Int(required=True)
         pass_count  = graphene.Int(required=False)
-        fail_count  = graphene.Int(required=False)     # 1–20 dropdown
+        fail_count  = graphene.Int(required=False)
 
-    @login_required
     def mutate(self, info, process, employee_id, count, pass_count=0, fail_count=0):
+        require_admin(info)  # admin only
+
         valid_processes = ["Welding", "UT", "Forming", "SR", "Final UT"]
         if process not in valid_processes:
             return AddProcessEntry(success=False, message=f"Invalid process. Choose: {valid_processes}")
@@ -530,8 +562,8 @@ class AddProcessEntry(graphene.Mutation):
             employee_name=emp.name,
             employee_id_snapshot=emp.employee_id,
             count=count,
-            pass_count=pass_count,     # ✅ ADD THIS
-            fail_count=fail_count,  
+            pass_count=pass_count,
+            fail_count=fail_count,
             submitted_by=info.context.user,
             date=today,
             day=today.day,
@@ -539,7 +571,6 @@ class AddProcessEntry(graphene.Mutation):
             year=today.year,
         )
 
-        # ✅ Increment dashboard counters
         update_dashboard_counters(process, count, today)
 
         return AddProcessEntry(success=True, message="Process entry submitted and dashboard updated", entry=entry)
@@ -548,32 +579,30 @@ class AddProcessEntry(graphene.Mutation):
 # ── Attendance ────────────────────────────────────────────────
 
 class UploadAttendance(graphene.Mutation):
-    """
-    Called when the user presses 'Upload' on the Attendance screen.
-    Stores geo-tagged photo attendance record.
-    """
+    """✅ Active users (non-admin) can use this."""
     attendance = graphene.Field(AttendanceType)
     success    = graphene.Boolean()
     message    = graphene.String()
 
     class Arguments:
-        employee_id  = graphene.ID(required=True)
-        photo        = Upload(required=False)        # local file upload
-        photo_url    = graphene.String(required=False)  # cloud URL
-        latitude     = graphene.Float(required=True)
-        longitude    = graphene.Float(required=True)
-        accuracy     = graphene.Float(required=False)
-        address      = graphene.String(required=False)
-        captured_at  = graphene.String(required=True)   # ISO datetime string from device
-        status       = graphene.String(required=False, default_value="Present")
-        remarks      = graphene.String(required=False)
+        employee_id = graphene.ID(required=True)
+        photo       = Upload(required=False)
+        photo_url   = graphene.String(required=False)
+        latitude    = graphene.Float(required=True)
+        longitude   = graphene.Float(required=True)
+        accuracy    = graphene.Float(required=False)
+        address     = graphene.String(required=False)
+        captured_at = graphene.String(required=True)
+        status      = graphene.String(required=False, default_value="Present")
+        remarks     = graphene.String(required=False)
 
-    @login_required
     def mutate(
         self, info, employee_id, latitude, longitude, captured_at,
         photo=None, photo_url=None, accuracy=None, address=None,
         status="Present", remarks=None
     ):
+        require_active(info)  # ✅ any active user (attendance screen)
+
         try:
             emp = Employee.objects.get(id=employee_id, is_active=True)
         except Employee.DoesNotExist:
@@ -582,7 +611,6 @@ class UploadAttendance(graphene.Mutation):
         if not photo and not photo_url:
             return UploadAttendance(success=False, message="Either a photo file or photo_url is required")
 
-        # Parse ISO datetime from mobile device
         try:
             captured_dt = datetime.fromisoformat(captured_at)
         except ValueError:
@@ -592,7 +620,6 @@ class UploadAttendance(graphene.Mutation):
         if status not in valid_statuses:
             return UploadAttendance(success=False, message=f"Invalid status. Choose: {valid_statuses}")
 
-        # Prevent duplicate attendance for same employee same day
         if Attendance.objects.filter(
             employee=emp,
             day=captured_dt.day,
@@ -614,6 +641,7 @@ class UploadAttendance(graphene.Mutation):
             longitude=longitude,
             accuracy=accuracy,
             address=address,
+            in_time=captured_dt,
             captured_at=captured_dt,
             day=captured_dt.day,
             month=captured_dt.month,
@@ -625,41 +653,88 @@ class UploadAttendance(graphene.Mutation):
         return UploadAttendance(success=True, message="Attendance uploaded successfully", attendance=att)
 
 
+class ClockOut(graphene.Mutation):
+    """✅ Active users (non-admin) can use this."""
+    attendance = graphene.Field(AttendanceType)
+    success    = graphene.Boolean()
+    message    = graphene.String()
+
+    class Arguments:
+        employee_id = graphene.ID(required=True)
+        photo_url   = graphene.String(required=False)
+        captured_at = graphene.String(required=True)
+
+    def mutate(self, info, employee_id, captured_at, photo_url=None):
+        require_active(info)  # ✅ any active user (attendance screen)
+
+        try:
+            emp = Employee.objects.get(id=employee_id, is_active=True)
+        except Employee.DoesNotExist:
+            return ClockOut(success=False, message="Employee not found")
+
+        try:
+            out_dt = datetime.fromisoformat(captured_at)
+        except ValueError:
+            return ClockOut(success=False, message="Invalid captured_at format")
+
+        try:
+            att = Attendance.objects.get(
+                employee=emp,
+                day=out_dt.day,
+                month=out_dt.month,
+                year=out_dt.year,
+            )
+        except Attendance.DoesNotExist:
+            return ClockOut(success=False, message="No clock-in found for today. Please clock in first.")
+
+        if att.out_time:
+            return ClockOut(success=False, message="Already clocked out today.")
+
+        att.out_time = out_dt
+        if photo_url:
+            att.out_photo_url = photo_url
+        att.save()
+
+        return ClockOut(success=True, message="Clocked out successfully", attendance=att)
+
+
 # ═════════════════════════════════════════════════════════════
 #  M U T A T I O N   R O O T
 # ═════════════════════════════════════════════════════════════
 
 class Mutation(graphene.ObjectType):
 
-    # Auth
-    create_user     = CreateUser.Field()
+    # Auth (open — no login needed)
     login_user      = LoginUser.Field()
     forgot_password = ForgotPassword.Field()
     reset_password  = ResetPassword.Field()
+
+    # Auth (admin only)
+    create_user   = CreateUser.Field()
 
     # Standard JWT helpers
     token_auth    = graphql_jwt.ObtainJSONWebToken.Field()
     verify_token  = graphql_jwt.Verify.Field()
     refresh_token = graphql_jwt.Refresh.Field()
 
-    # Employee
+    # Employee (admin only)
     create_employee = CreateEmployee.Field()
     update_employee = UpdateEmployee.Field()
     delete_employee = DeleteEmployee.Field()
 
-    # Day-to-Day Monitoring screen
+    # Day-to-Day Monitoring screen (admin only)
     add_day_to_day_entry = AddDayToDayEntry.Field()
 
-    # Process screen
+    # Process screen (admin only)
     add_process_entry = AddProcessEntry.Field()
 
-    # Attendance screen
+    # Attendance screen (active users — admin or not)
     upload_attendance = UploadAttendance.Field()
+    clock_out         = ClockOut.Field()
 
 
 # ═════════════════════════════════════════════════════════════
 #  S C H E M A
 # ═════════════════════════════════════════════════════════════
-
 
 schema = graphene.Schema(query=Query, mutation=Mutation)

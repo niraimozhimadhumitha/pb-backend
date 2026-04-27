@@ -165,18 +165,25 @@ class Attendance(models.Model):
     employee_name = models.CharField(max_length=255)
     employee_id_snapshot = models.CharField(max_length=50)
 
-    # Photo stored as a URL (uploaded to cloud/local storage)
     photo         = models.ImageField(upload_to="attendance_photos/", null=True, blank=True)
     photo_url     = models.URLField(max_length=1000, blank=True, null=True)
 
-    # Geo-tag
+    # NEW: separate in/out photos
+    in_photo      = models.ImageField(upload_to="attendance_photos/", null=True, blank=True)
+    in_photo_url  = models.URLField(max_length=1000, blank=True, null=True)
+    out_photo     = models.ImageField(upload_to="attendance_photos/", null=True, blank=True)
+    out_photo_url = models.URLField(max_length=1000, blank=True, null=True)
+
     latitude      = models.DecimalField(max_digits=9, decimal_places=6)
     longitude     = models.DecimalField(max_digits=9, decimal_places=6)
     accuracy      = models.FloatField(null=True, blank=True)
     address       = models.CharField(max_length=500, blank=True, null=True)
 
-    # Timestamp from device at moment of capture
-    captured_at   = models.DateTimeField()
+    # NEW: in/out times
+    in_time       = models.DateTimeField(null=True, blank=True)
+    out_time      = models.DateTimeField(null=True, blank=True)
+
+    captured_at   = models.DateTimeField()   # keeps backward compat (= in_time)
     day           = models.IntegerField()
     month         = models.IntegerField()
     year          = models.IntegerField()
@@ -187,7 +194,6 @@ class Attendance(models.Model):
     created_at    = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        # One attendance record per employee per day
         unique_together = ("employee", "day", "month", "year")
 
     def save(self, *args, **kwargs):
@@ -199,7 +205,6 @@ class Attendance(models.Model):
 
     def __str__(self):
         return f"{self.employee_name} – {self.captured_at.date()}"
-
 
 # ─────────────────────────────────────────────────────────────
 #  Dashboard – Cumulative Total  (single-row table)
